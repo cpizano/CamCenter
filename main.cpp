@@ -1,12 +1,17 @@
 // Thuis file is the main driver for CamCenter.
 
 #include "stdafx.h"
+
+#include <mfreadwrite.h>
 #include "resource.h"
+
+#pragma comment(lib, "mfreadwrite.lib")
 
 enum class HardFailures {
   none,
   bad_config,
-  com_error
+  com_error,
+  no_capture_device
 };
 
 void HardfailMsgBox(HardFailures id, const wchar_t* info) {
@@ -140,12 +145,109 @@ public:
 
 };
 
+////////////////////////////////////////////////////////////////////////////////////////////////
+
+struct AppException {
+  HardFailures failure;
+  int line;
+  AppException(HardFailures failure, int line) : failure(failure), line(line) {}
+};
+
+plx::ComPtr<IMFAttributes> MakeMFAttributes(uint32_t count) {
+  plx::ComPtr<IMFAttributes> attribs;
+  auto hr = ::MFCreateAttributes(attribs.GetAddressOf(), count);
+  if (hr != S_OK)
+    throw plx::ComException(__LINE__, hr);
+  return attribs;
+}
+
+plx::ComPtr<IMFMediaSource> GetCaptureDevice() {
+  auto attributes = MakeMFAttributes(1);
+  attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                      MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+
+  IMFActivate** sources;
+  uint32_t count = 0;
+  auto hr = ::MFEnumDeviceSources(attributes.Get(), &sources, &count);
+  if (hr != S_OK)
+    throw plx::ComException(__LINE__, hr);
+
+  if (count == 0)
+    throw AppException(HardFailures::no_capture_device, __LINE__);
+
+  plx::ComPtr<IMFMediaSource> device;
+  hr = sources[0]->ActivateObject(__uuidof(device),
+                                  reinterpret_cast<void **>(device.GetAddressOf()));
+  if (hr != S_OK)
+    throw plx::ComException(__LINE__, hr);
+
+  for (uint32_t ix = 0; ix != count; ++ix) {
+    sources[ix]->Release();
+  }
+  
+  ::CoTaskMemFree(sources);
+  return device;
+}
+
+class MediaFoundationInit {
+public:
+  MediaFoundationInit() {
+    auto hr = ::MFStartup(MF_VERSION, MFSTARTUP_LITE);
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+  }
+
+  ~MediaFoundationInit() {
+    ::MFShutdown();
+  }
+};
+
+class CaptureHandler : public plx::ComObject <IMFSourceReaderCallback> {
+  plx::ReaderWriterLock rw_lock_;
+  plx::ComPtr<IMFSourceReader> reader_;
+
+public:
+  CaptureHandler(plx::ComPtr<IMFMediaSource> source) {
+    auto attributes = MakeMFAttributes(2);
+    attributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, this);
+    auto hr = ::MFCreateSourceReaderFromMediaSource(
+        source.Get(), attributes.Get(), reader_.GetAddressOf());
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+  }
+
+private:
+  HRESULT __stdcall OnReadSample(HRESULT status,
+                                 DWORD stream_index,
+                                 DWORD stream_flags,
+                                 LONGLONG timestamp,
+                                 IMFSample *pSample) override {
+    auto lock = rw_lock_.write_lock();
+    return S_OK;
+  };
+
+  HRESULT __stdcall OnEvent(DWORD, IMFMediaEvent *) override {
+    return S_OK;
+  }
+
+  HRESULT __stdcall OnFlush(DWORD) {
+    return S_OK;
+  }
+};
+
 
 int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
                        wchar_t* cmdline, int cmd_show) {
+
+  // Despite this, MediaFoundation IMFSourceReaderCallback is multithreaded.
+  ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
   try {
     auto settings = LoadSettings();
     DCoWindow window(300, 200);
+
+    MediaFoundationInit mf_init;
+    CaptureHandler capture_handler(GetCaptureDevice());
 
     MSG msg = {0};
     while (::GetMessage(&msg, NULL, 0, 0)) {
@@ -162,5 +264,8 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
     auto l = ex.Line();
     HardfailMsgBox(HardFailures::com_error, L"COM");
     return 2;
+  } catch (AppException& ex) {
+    HardfailMsgBox(ex.failure, L"App");
+    return 3;
   }
 }
