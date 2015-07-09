@@ -8,9 +8,11 @@
 #pragma comment(lib, "shcore.lib")
 #pragma comment(lib, "mf.lib")
 #pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "strmiids.lib")
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dcomp.lib")
+#pragma comment(lib, "mfuuid.lib")
 namespace plx {
 plx::ComPtr<IDCompositionDesktopDevice> CreateDCoDevice2(
     plx::ComPtr<ID2D1Device> device2D) {

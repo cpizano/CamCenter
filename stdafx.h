@@ -14,10 +14,15 @@
 #include <mfidl.h>
 #include <mfapi.h>
 #include <shlobj.h>
+#include <dshow.h>
+#include <wmcodecdsp.h>
+#include <uuids.h>
 #include <d2d1_2.h>
 #include <d3d11_2.h>
 #include <dcomp.h>
+#include <mferror.h>
 #include <wrl.h>
+#include <dvdmedia.h>
 #include <string.h>
 #include <array>
 #include <initializer_list>

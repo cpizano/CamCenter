@@ -5,13 +5,21 @@
 #include <mfreadwrite.h>
 #include "resource.h"
 
+// this pragma cannot be done by plex because there is MS header ordering issue.
 #pragma comment(lib, "mfreadwrite.lib")
 
 enum class HardFailures {
   none,
   bad_config,
   com_error,
-  no_capture_device
+  no_capture_device,
+  bad_format
+};
+
+struct AppException {
+  HardFailures failure;
+  int line;
+  AppException(HardFailures failure, int line) : failure(failure), line(line) {}
 };
 
 void HardfailMsgBox(HardFailures id, const wchar_t* info) {
@@ -147,18 +155,22 @@ public:
 
 ////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct AppException {
-  HardFailures failure;
-  int line;
-  AppException(HardFailures failure, int line) : failure(failure), line(line) {}
-};
-
 plx::ComPtr<IMFAttributes> MakeMFAttributes(uint32_t count) {
   plx::ComPtr<IMFAttributes> attribs;
   auto hr = ::MFCreateAttributes(attribs.GetAddressOf(), count);
   if (hr != S_OK)
     throw plx::ComException(__LINE__, hr);
   return attribs;
+}
+
+void CopyMFAttribute(const GUID& key, IMFAttributes* src, IMFAttributes* dest) {
+  PROPVARIANT var;
+  ::PropVariantInit(&var);
+  auto hr = src->GetItem(key, &var);
+  if (hr != S_OK)
+    throw plx::ComException(__LINE__, hr);
+  dest->SetItem(key, var);
+  ::PropVariantClear(&var);
 }
 
 plx::ComPtr<IMFMediaSource> GetCaptureDevice() {
@@ -205,15 +217,136 @@ public:
 class CaptureHandler : public plx::ComObject <IMFSourceReaderCallback> {
   plx::ReaderWriterLock rw_lock_;
   plx::ComPtr<IMFSourceReader> reader_;
+  plx::ComPtr<IMFSinkWriter> writer_;
+  LONGLONG base_time_;
+  LONGLONG frame_count_;
 
 public:
-  CaptureHandler(plx::ComPtr<IMFMediaSource> source) {
+  CaptureHandler(plx::ComPtr<IMFMediaSource> source) 
+      : base_time_(0ULL), frame_count_(0ULL) {
     auto attributes = MakeMFAttributes(2);
     attributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, this);
     auto hr = ::MFCreateSourceReaderFromMediaSource(
         source.Get(), attributes.Get(), reader_.GetAddressOf());
     if (hr != S_OK)
       throw plx::ComException(__LINE__, hr);
+
+    // Loop until we find the right format, then select it.
+    DWORD media_type_ix = 0;
+    plx::ComPtr<IMFMediaType> mtype;
+    bool done = false;
+    while (!done) {
+      hr = reader_->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                                       media_type_ix++,
+                                       mtype.ReleaseAndGetAddressOf());
+      if (hr == MF_E_NO_MORE_TYPES)
+        throw AppException(HardFailures::bad_format, __LINE__);
+
+      if (hr != S_OK)
+        throw plx::ComException(__LINE__, hr);
+      GUID subtype = {0};
+      hr = mtype->GetGUID(MF_MT_SUBTYPE, &subtype);
+      if (hr != S_OK)
+        throw plx::ComException(__LINE__, hr);
+
+      if ((subtype != MFVideoFormat_YUY2) && (subtype !=  MFVideoFormat_NV12))
+        continue;
+
+      AM_MEDIA_TYPE* amr = nullptr;
+      hr = mtype->GetRepresentation(AM_MEDIA_TYPE_REPRESENTATION, reinterpret_cast<void**>(&amr));
+      if (hr != S_OK)
+        throw plx::ComException(__LINE__, hr);
+
+      if (amr->formattype == FORMAT_VideoInfo2) {
+        auto vih = reinterpret_cast<VIDEOINFOHEADER2*>(amr->pbFormat);
+        if ((vih->bmiHeader.biWidth > 600) && (vih->bmiHeader.biHeight > 400)) {
+          if (vih->bmiHeader.biBitCount > 8) {
+            // This is an aceptable combination.
+            hr = reader_->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                                              nullptr,
+                                              mtype.Get());
+            if (hr != S_OK)
+              throw plx::ComException(__LINE__, hr);
+            done = true;
+          }
+        }
+        
+      } else {
+        // $$$ decode other types like FORMAT_VideoInfo.
+      }
+
+      mtype->FreeRepresentation(AM_MEDIA_TYPE_REPRESENTATION, amr);
+    }
+
+
+    // Register the color converter DSP for this process. This will enable the sink writer
+    // to find the color converter when the sink writer attempts to match the media types.
+    hr = ::MFTRegisterLocalByCLSID(__uuidof(CColorConvertDMO),
+                                   MFT_CATEGORY_VIDEO_PROCESSOR, L"",
+                                   MFT_ENUM_FLAG_SYNCMFT,
+                                   0, nullptr, 0, nullptr);
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+  }
+
+  void start(const wchar_t* filename) {
+    if (writer_)
+      return;
+
+    auto hr = MFCreateSinkWriterFromURL(filename, nullptr, nullptr, writer_.GetAddressOf());
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+
+    plx::ComPtr<IMFMediaType> reader_mtype;
+    hr = reader_->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                                      reader_mtype.GetAddressOf());
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+
+    plx::ComPtr<IMFMediaType> writer_mtype;
+    hr = MFCreateMediaType(writer_mtype.GetAddressOf());
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+
+    writer_mtype->SetGUID( MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    writer_mtype->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+    writer_mtype->SetUINT32(MF_MT_AVG_BITRATE, 240 * 1000);
+    CopyMFAttribute(MF_MT_FRAME_SIZE, reader_mtype.Get(), writer_mtype.Get());
+    CopyMFAttribute(MF_MT_FRAME_RATE, reader_mtype.Get(), writer_mtype.Get());
+    CopyMFAttribute(MF_MT_PIXEL_ASPECT_RATIO, reader_mtype.Get(), writer_mtype.Get());
+    CopyMFAttribute(MF_MT_INTERLACE_MODE, reader_mtype.Get(), writer_mtype.Get());
+
+    DWORD stream_index;
+    hr = writer_->AddStream(writer_mtype.Get(), &stream_index);
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+
+    hr = writer_->SetInputMediaType(stream_index, reader_mtype.Get(), nullptr);
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+
+    base_time_ = 0ULL;
+    frame_count_ = 0ULL;
+
+    hr = writer_->BeginWriting();
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+
+    hr = reader_->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                             0, nullptr, nullptr, nullptr, nullptr);
+    if (hr != S_OK)
+      throw plx::ComException(__LINE__, hr);
+  }
+
+  void stop() {
+    auto lock = rw_lock_.write_lock();
+
+    if (!writer_)
+      return;
+
+    writer_->Finalize();
+    writer_.Reset();
+    reader_.Reset();
   }
 
 private:
@@ -221,9 +354,34 @@ private:
                                  DWORD stream_index,
                                  DWORD stream_flags,
                                  LONGLONG timestamp,
-                                 IMFSample *pSample) override {
+                                 IMFSample *sample) override {
+    if (FAILED(status))
+      return status;
+
+    HRESULT hr;
     auto lock = rw_lock_.write_lock();
-    return S_OK;
+
+    if (!writer_)
+      return S_OK;
+
+    if (sample) {
+      ++frame_count_;
+
+      if (!base_time_)
+        base_time_ = timestamp;
+      
+      auto norm_timestamp = timestamp - base_time_;
+      sample->SetSampleTime(norm_timestamp);
+      hr = writer_->WriteSample(0, sample);
+      if (hr != S_OK)
+        throw plx::ComException(__LINE__, hr);
+    }
+
+    // request the next sample.
+    hr = reader_->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                             0, nullptr, nullptr, nullptr, nullptr);
+
+    return hr;
   };
 
   HRESULT __stdcall OnEvent(DWORD, IMFMediaEvent *) override {
@@ -249,11 +407,15 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
     MediaFoundationInit mf_init;
     CaptureHandler capture_handler(GetCaptureDevice());
 
+    capture_handler.start(L"c:\\test\\video\\capture.mp4");
+
     MSG msg = {0};
     while (::GetMessage(&msg, NULL, 0, 0)) {
       ::TranslateMessage(&msg);
       ::DispatchMessage(&msg);
     }
+
+    capture_handler.stop();
 
     return (int) msg.wParam;
 
