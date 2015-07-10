@@ -28,13 +28,14 @@ void HardfailMsgBox(HardFailures id, const wchar_t* info) {
 }
 
 struct Settings {
-  std::string camera;
-  std::wstring folder;
+  std::string folder;
+  std::string file_prefix;
+  int64_t avg_file_size;
 };
 
 plx::File OpenConfigFile() {
   auto appdata_path = plx::GetAppDataPath(false);
-  auto path = appdata_path.append(L"vortex\\texto\\config.json");
+  auto path = appdata_path.append(L"vortex\\camcenter\\config.json");
   plx::FileParams fparams = plx::FileParams::Read_SharedRead();
   return plx::File::Create(path, fparams, plx::FileSecurity());
 }
@@ -43,8 +44,12 @@ Settings LoadSettings() {
   auto config = plx::JsonFromFile(OpenConfigFile());
   if (config.type() != plx::JsonType::OBJECT)
     throw plx::IOException(__LINE__, L"<unexpected json>");
-  // $$ read & set something here.
-  return Settings();
+
+  Settings settings;
+  settings.folder = config["folder"].get_string();
+  settings.file_prefix = config["file_prefix"].get_string();
+  settings.avg_file_size = config["avg_file_size"].get_int64();
+  return settings;
 }
 
 const D2D1_SIZE_F zero_offset = {0};
@@ -220,9 +225,11 @@ class CaptureHandler : public plx::ComObject <IMFSourceReaderCallback> {
   plx::ComPtr<IMFSinkWriter> writer_;
   LONGLONG base_time_;
   LONGLONG frame_count_;
+  std::wstring file_;
 
 public:
-  CaptureHandler(plx::ComPtr<IMFMediaSource> source) 
+  CaptureHandler(plx::ComPtr<IMFMediaSource> source,
+                 const Settings& settings) 
       : base_time_(0ULL), frame_count_(0ULL) {
     auto attributes = MakeMFAttributes(2);
     attributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, this);
@@ -287,13 +294,17 @@ public:
                                    0, nullptr, 0, nullptr);
     if (hr != S_OK)
       throw plx::ComException(__LINE__, hr);
+
+    auto prefix = settings.folder + '\\' + settings.file_prefix;
+    file_ = plx::UTF16FromUTF8(plx::RangeFromString(prefix), true);
   }
 
-  void start(const wchar_t* filename) {
+  void start() {
     if (writer_)
       return;
 
-    auto hr = MFCreateSinkWriterFromURL(filename, nullptr, nullptr, writer_.GetAddressOf());
+    auto hr = MFCreateSinkWriterFromURL(
+        gen_filename(), nullptr, nullptr, writer_.GetAddressOf());
     if (hr != S_OK)
       throw plx::ComException(__LINE__, hr);
 
@@ -391,6 +402,12 @@ private:
   HRESULT __stdcall OnFlush(DWORD) {
     return S_OK;
   }
+
+
+  const wchar_t* gen_filename() {
+    file_ += L"01.mp4";
+    return file_.c_str();
+  }
 };
 
 
@@ -405,9 +422,9 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
     DCoWindow window(300, 200);
 
     MediaFoundationInit mf_init;
-    CaptureHandler capture_handler(GetCaptureDevice());
+    CaptureHandler capture_handler(GetCaptureDevice(), settings);
 
-    capture_handler.start(L"c:\\test\\video\\capture.mp4");
+    capture_handler.start();
 
     MSG msg = {0};
     while (::GetMessage(&msg, NULL, 0, 0)) {

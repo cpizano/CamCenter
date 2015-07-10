@@ -1435,6 +1435,11 @@ plx::JsonValue JsonFromFile(plx::File& cfile) ;
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// plx::UTF16FromUTF8
+std::wstring UTF16FromUTF8(const plx::Range<const uint8_t>& utf8, bool strict) ;
+
+
+///////////////////////////////////////////////////////////////////////////////
 // plx::User32Exception (thrown by user32 functions)
 //
 class User32Exception : public plx::Exception {

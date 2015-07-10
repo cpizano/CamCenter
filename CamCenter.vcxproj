@@ -108,6 +108,9 @@
     <PreBuildEvent>
       <Command>del stdafx.* &amp; $(ProjectDir)plex.exe --generate main.cpp --pch --catalog=..\plex\src\catalog</Command>
     </PreBuildEvent>
+    <PostBuildEvent>
+      <Command>copy  $(ProjectDir)config.json %localappdata%\vortex\camcenter</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -140,6 +143,9 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
+    <PostBuildEvent>
+      <Command>copy  $(ProjectDir)config.json %localappdata%\vortex\camcenter</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Resource.h" />
@@ -160,6 +166,9 @@
   <ItemGroup>
     <Image Include="CamCenter.ico" />
     <Image Include="small.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="config.json" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
