@@ -30,7 +30,6 @@ void HardfailMsgBox(HardFailures id, const wchar_t* info) {
 
 struct Settings {
   std::string folder;
-  std::string file_prefix;
   int64_t seconds_per_file;
   int64_t average_bitrate;
 };
@@ -49,7 +48,6 @@ Settings LoadSettings() {
 
   Settings settings;
   settings.folder = config["folder"].get_string();
-  settings.file_prefix = config["file_prefix"].get_string();
   settings.seconds_per_file = config["seconds_per_file"].get_int64();
   settings.average_bitrate = config["average_bitrate"].get_int64();
   return settings;
@@ -406,7 +404,7 @@ private:
 };
 
 class CaptureManager {
-  Settings settings_;
+  const Settings settings_;
   plx::ComPtr<VideoCaptureH264> capture_;
 
 public:
@@ -429,16 +427,17 @@ private:
   std::wstring gen_filename() {
     SYSTEMTIME st = {0};
     ::GetLocalTime(&st);
+    st.wYear -= 2000;
 
-    auto filename = settings_.folder + '\\' + settings_.file_prefix;
+    auto filename = settings_.folder;
     if (st.wHour < 13)
       filename += plx::StringPrintf(
-          "%02d-%02d-am%02d-%02dm%02ds.mp4",
-          st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+          "\\Y%02d-%02d-%02d-am-%02dh%02dm%02ds.mp4",
+          st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     else {
       filename += plx::StringPrintf(
-          "%02d-%02d-pm%02d-%02dm%02ds.mp4",
-          st.wMonth, st.wDay, st.wHour - 12, st.wMinute, st.wSecond);
+          "\\Y%02d-%02d-%02d-pm-%02dh%02dm%02ds.mp4",
+          st.wYear, st.wMonth, st.wDay, st.wHour - 12, st.wMinute, st.wSecond);
     }
 
     return plx::UTF16FromUTF8(plx::RangeFromString(filename), true);
