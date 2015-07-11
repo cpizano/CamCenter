@@ -1,5 +1,6 @@
 {
     "folder": "c:\\test\\video",
     "file_prefix": "cam_",
-    "avg_file_size":  40000000
+    "seconds_per_file": 70,
+    "average_bitrate":  240000
 }

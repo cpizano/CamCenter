@@ -37,6 +37,7 @@
 #include <memory>
 #include <vector>
 #include <stdint.h>
+#include <stdarg.h>
 #include <windows.h>
 
 
@@ -96,6 +97,11 @@ public:
 template <typename... T> using ComObject =
     Microsoft::WRL::RuntimeClass <
         Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, T...>;
+
+template <typename T, typename... Args>
+Microsoft::WRL::ComPtr <T> MakeComObj(Args&&... args) {
+  return Microsoft::WRL::Make<T>(std::forward<Args>(args)...);
+}
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1427,6 +1433,13 @@ struct RectL : public ::RECT {
 plx::JsonValue ParseJsonValue(plx::Range<const char>& range);
 
 plx::JsonValue ParseJsonValue(plx::Range<const char>& range) ;
+
+
+///////////////////////////////////////////////////////////////////////////////
+// plx::StringPrintf  (c-style printf for std strings)
+//
+
+std::string StringPrintf(const char* fmt, ...) ;
 
 
 ///////////////////////////////////////////////////////////////////////////////

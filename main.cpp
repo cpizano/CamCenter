@@ -13,7 +13,8 @@ enum class HardFailures {
   bad_config,
   com_error,
   no_capture_device,
-  bad_format
+  bad_format,
+  invalid_command
 };
 
 struct AppException {
@@ -30,7 +31,8 @@ void HardfailMsgBox(HardFailures id, const wchar_t* info) {
 struct Settings {
   std::string folder;
   std::string file_prefix;
-  int64_t avg_file_size;
+  int64_t seconds_per_file;
+  int64_t average_bitrate;
 };
 
 plx::File OpenConfigFile() {
@@ -48,7 +50,8 @@ Settings LoadSettings() {
   Settings settings;
   settings.folder = config["folder"].get_string();
   settings.file_prefix = config["file_prefix"].get_string();
-  settings.avg_file_size = config["avg_file_size"].get_int64();
+  settings.seconds_per_file = config["seconds_per_file"].get_int64();
+  settings.average_bitrate = config["average_bitrate"].get_int64();
   return settings;
 }
 
@@ -219,18 +222,19 @@ public:
   }
 };
 
-class CaptureHandler : public plx::ComObject <IMFSourceReaderCallback> {
+class VideoCaptureH264 : public plx::ComObject <IMFSourceReaderCallback> {
   plx::ReaderWriterLock rw_lock_;
   plx::ComPtr<IMFSourceReader> reader_;
   plx::ComPtr<IMFSinkWriter> writer_;
+  uint32_t avg_bitrate_;
   LONGLONG base_time_;
   LONGLONG frame_count_;
-  std::wstring file_;
 
 public:
-  CaptureHandler(plx::ComPtr<IMFMediaSource> source,
-                 const Settings& settings) 
-      : base_time_(0ULL), frame_count_(0ULL) {
+  VideoCaptureH264(plx::ComPtr<IMFMediaSource> source, uint32_t bitrate) 
+      : avg_bitrate_(bitrate),
+        base_time_(0ULL),
+        frame_count_(0ULL) {
     auto attributes = MakeMFAttributes(2);
     attributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, this);
     auto hr = ::MFCreateSourceReaderFromMediaSource(
@@ -294,17 +298,14 @@ public:
                                    0, nullptr, 0, nullptr);
     if (hr != S_OK)
       throw plx::ComException(__LINE__, hr);
-
-    auto prefix = settings.folder + '\\' + settings.file_prefix;
-    file_ = plx::UTF16FromUTF8(plx::RangeFromString(prefix), true);
   }
 
-  void start() {
+  void start(const wchar_t* filename) {
     if (writer_)
-      return;
+      throw AppException(HardFailures::invalid_command, __LINE__);
 
     auto hr = MFCreateSinkWriterFromURL(
-        gen_filename(), nullptr, nullptr, writer_.GetAddressOf());
+        filename, nullptr, nullptr, writer_.GetAddressOf());
     if (hr != S_OK)
       throw plx::ComException(__LINE__, hr);
 
@@ -321,7 +322,7 @@ public:
 
     writer_mtype->SetGUID( MF_MT_MAJOR_TYPE, MFMediaType_Video);
     writer_mtype->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
-    writer_mtype->SetUINT32(MF_MT_AVG_BITRATE, 240 * 1000);
+    writer_mtype->SetUINT32(MF_MT_AVG_BITRATE, avg_bitrate_);
     CopyMFAttribute(MF_MT_FRAME_SIZE, reader_mtype.Get(), writer_mtype.Get());
     CopyMFAttribute(MF_MT_FRAME_RATE, reader_mtype.Get(), writer_mtype.Get());
     CopyMFAttribute(MF_MT_PIXEL_ASPECT_RATIO, reader_mtype.Get(), writer_mtype.Get());
@@ -402,14 +403,48 @@ private:
   HRESULT __stdcall OnFlush(DWORD) {
     return S_OK;
   }
-
-
-  const wchar_t* gen_filename() {
-    file_ += L"01.mp4";
-    return file_.c_str();
-  }
 };
 
+class CaptureManager {
+  Settings settings_;
+  plx::ComPtr<VideoCaptureH264> capture_;
+
+public:
+  CaptureManager(const Settings& settings) : settings_(settings) {
+    auto bitrate = plx::To<uint32_t>(settings.average_bitrate);
+    capture_ = plx::MakeComObj<VideoCaptureH264>(GetCaptureDevice(), bitrate);
+  }
+
+  void start() {
+    auto file = gen_filename();
+    capture_->start(file.c_str());
+  }
+
+  void stop() {
+    capture_->stop();
+  }
+
+private:
+
+  std::wstring gen_filename() {
+    SYSTEMTIME st = {0};
+    ::GetLocalTime(&st);
+
+    auto filename = settings_.folder + '\\' + settings_.file_prefix;
+    if (st.wHour < 13)
+      filename += plx::StringPrintf(
+          "%02d-%02d-am%02d-%02dm%02ds.mp4",
+          st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    else {
+      filename += plx::StringPrintf(
+          "%02d-%02d-pm%02d-%02dm%02ds.mp4",
+          st.wMonth, st.wDay, st.wHour - 12, st.wMinute, st.wSecond);
+    }
+
+    return plx::UTF16FromUTF8(plx::RangeFromString(filename), true);
+  }
+
+};
 
 int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
                        wchar_t* cmdline, int cmd_show) {
@@ -422,9 +457,8 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
     DCoWindow window(300, 200);
 
     MediaFoundationInit mf_init;
-    CaptureHandler capture_handler(GetCaptureDevice(), settings);
-
-    capture_handler.start();
+    CaptureManager capture_manager(LoadSettings());
+    capture_manager.start();
 
     MSG msg = {0};
     while (::GetMessage(&msg, NULL, 0, 0)) {
@@ -432,7 +466,7 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
       ::DispatchMessage(&msg);
     }
 
-    capture_handler.stop();
+    capture_manager.stop();
 
     return (int) msg.wParam;
 
