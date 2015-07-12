@@ -86,12 +86,25 @@ class DCoWindow : public plx::Window <DCoWindow> {
 
   plx::ComPtr<IDCompositionVisual2> root_visual_;
   plx::ComPtr<IDCompositionSurface> root_surface_;
+  
+  enum BrushesMain {
+    brush_close,
+    brush_drag,
+    brush_text,
+    brush_last
+  };
+
+  plx::D2D1BrushManager brushes_;
+
+  plx::ComPtr<ID2D1Geometry> geom_close_;
+  plx::ComPtr<ID2D1Geometry> geom_move_;
 
   std::function<void()> timer_callback_;
 
 public:
   DCoWindow(int width, int height)
-      : width_(width), height_(height) {
+      : width_(width), height_(height),
+        brushes_(brush_last) {
 
     create_window(WS_EX_NOREDIRECTIONBITMAP,
                   WS_POPUP | WS_VISIBLE,
@@ -123,6 +136,20 @@ public:
     if (hr != S_OK)
       throw plx::ComException(__LINE__, hr);
 
+    auto widget_pos = D2D1::Point2F(18.0f, 18.0f);
+    geom_close_ = plx::CreateD2D1Geometry(d2d_factory_,
+        D2D1::Ellipse(D2D1::Point2F(width_ - 18.0f , 18.0f), 8.0f, 8.0f));
+
+    geom_move_ = plx::CreateD2D1Geometry(d2d_factory_,
+        D2D1::RoundedRect(D2D1::RectF(22.0f, 0, width_ - 25.0f, 16), 3.0f, 3.0f));
+
+    {
+      plx::ScopedD2D1DeviceContext dc(root_surface_, zero_offset, dpi(), nullptr);
+      brushes_.set_solid(dc(), brush_close, 0xBD4B5B, 1.0f);
+      brushes_.set_solid(dc(), brush_drag, 0x1E5D81, 0.4f);
+      brushes_.set_solid(dc(), brush_text, 0x00AE4A, 1.0f);
+    }
+
     update_screen();
   }
 
@@ -137,7 +164,8 @@ public:
   }
 
   void draw_frame(ID2D1DeviceContext* dc) {
-
+    dc->FillGeometry(geom_move_.Get(), brushes_.solid(brush_drag));
+    dc->DrawGeometry(geom_close_.Get(), brushes_.solid(brush_close), 4.0f);
   }
 
   void set_timer_callback(int milisecs, std::function<void()> callback) {
@@ -161,11 +189,15 @@ public:
         // just recovery here when using direct composition.
         break;
       }
-
       case WM_DPICHANGED: {
         return dpi_changed_handler(lparam);
       }
-
+      case WM_LBUTTONDOWN: {
+        return left_mouse_button_handler(true, MAKEPOINTS(lparam));
+      }
+      case WM_LBUTTONUP: {
+        return left_mouse_button_handler(false, MAKEPOINTS(lparam));
+      }
       case WM_TIMER: {
         timer_callback_();
         return 0;
@@ -189,6 +221,32 @@ public:
     ::SetWindowPos(window(), nullptr, suggested->left, suggested->top,
                    r.width(), r.height(),
                    SWP_NOACTIVATE | SWP_NOZORDER);
+    return 0L;
+  }
+
+  LRESULT left_mouse_button_handler(bool down, POINTS pts) {
+    BOOL hit = 0;
+    // check the close button.
+    geom_close_->FillContainsPoint(
+        D2D1::Point2F(pts.x, pts.y), D2D1::Matrix3x2F::Identity(), &hit);
+    if (hit != 0) {
+      if (!down)
+        ::PostQuitMessage(0);
+      return 0L;
+    }
+
+    if (!down)
+      return 0L;
+
+    // Not in the close. check hit for move window widget.
+    geom_move_->FillContainsPoint(
+        D2D1::Point2F(pts.x, pts.y), D2D1::Matrix3x2F::Identity(), &hit);
+    if (hit != 0) {
+      ::SendMessageW(window(), WM_SYSCOMMAND, SC_MOVE|0x0002, 0);
+    } else {
+      // probably on the main text.
+    }
+    
     return 0L;
   }
 

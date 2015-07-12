@@ -116,6 +116,19 @@ template <typename T> using ComPtr = Microsoft::WRL::ComPtr <T>;
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// Makes Direct2D's ID2D1Geometry objects.
+//
+
+plx::ComPtr<ID2D1Geometry> CreateD2D1Geometry(
+    plx::ComPtr<ID2D1Factory2> d2d1_factory,
+    const D2D1_ELLIPSE& ellipse) ;
+
+plx::ComPtr<ID2D1Geometry> CreateD2D1Geometry(
+    plx::ComPtr<ID2D1Factory2> d2d1_factory,
+    const D2D1_ROUNDED_RECT& rect) ;
+
+
+///////////////////////////////////////////////////////////////////////////////
 // plx::CreateDCoDevice2 : DirectComposition Desktop Device.
 //
 
@@ -234,6 +247,36 @@ plx::ComPtr<ID2D1Device> CreateDeviceD2D1(plx::ComPtr<ID3D11Device> device3D,
 //
 
 plx::ComPtr<ID3D11Device> CreateDeviceD3D11(int extra_flags) ;
+
+
+///////////////////////////////////////////////////////////////////////////////
+// plx::D2D1BrushManager : Direct2D brush manager
+//
+
+class D2D1BrushManager {
+  std::vector<plx::ComPtr<ID2D1SolidColorBrush>> sb_;
+
+public:
+  D2D1BrushManager(size_t size) : sb_(size) {
+  }
+
+  void set_solid(ID2D1RenderTarget* rt, size_t index, uint32_t color, float alpha) {
+     auto hr = rt->CreateSolidColorBrush(D2D1::ColorF(color, alpha),
+                                         sb_[index].ReleaseAndGetAddressOf());
+     if (hr != S_OK)
+       throw plx::ComException(__LINE__, hr);
+  }
+
+  ID2D1SolidColorBrush* solid(size_t index) {
+    return sb_[index].Get();
+  }
+
+  void release_all() {
+    for (auto& b : sb_) {
+      b.Reset();
+    }
+  }
+};
 
 
 ///////////////////////////////////////////////////////////////////////////////
