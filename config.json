@@ -1,5 +1,5 @@
 {
     "folder": "c:\\test\\video",
-    "seconds_per_file": 70,
+    "seconds_per_file": 300,
     "average_bitrate":  240000
 }
