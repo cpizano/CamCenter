@@ -46,6 +46,8 @@ struct Settings {
   std::string folder;
   int64_t seconds_per_file;
   int64_t average_bitrate;
+  int64_t keep_file_count;
+  int64_t clean_interval_minutes;
 };
 
 plx::File OpenConfigFile() {
@@ -64,6 +66,8 @@ Settings LoadSettings() {
   settings.folder = config["folder"].get_string();
   settings.seconds_per_file = config["seconds_per_file"].get_int64();
   settings.average_bitrate = config["average_bitrate"].get_int64();
+  settings.keep_file_count = config["keep_file_count"].get_int64();
+  settings.clean_interval_minutes = config["clean_interval_minutes"].get_int64();
   return settings;
 }
 
@@ -433,13 +437,56 @@ private:
   }
 };
 
+plx::File OpenDirectory(plx::FilePath& path) {
+  auto dir_par = plx::FileParams::Directory_ShareAll();
+  return plx::File::Create(path, dir_par, plx::FileSecurity());
+}
+
+bool EnumAndClean(plx::FilesInfo& files, const plx::FilePath& dirname, int64_t keep_count) {
+  std::map<long long, plx::Range<wchar_t>> file_map;
+  for (files.first(); !files.done(); files.next()) {
+    if (files.is_directory())
+      continue;
+    if (files.file_name().back() == '4') {
+      file_map[files.creation_ns1600()] = files.file_name();
+    }
+  }
+  // Figure out how many to delete.
+  auto delete_count = plx::To<int64_t>(file_map.size()) - keep_count;
+  if (delete_count <= 1)
+    return true;
+
+  for (auto& it : file_map) {
+    std::wstring name(it.second.start(), it.second.end());
+    auto ffn = dirname.append(name);
+    if (!::DeleteFile(ffn.raw())) {
+      auto gle = ::GetLastError();
+      continue;
+    }
+
+    // success, adjust the count.
+    --delete_count;
+    if (!delete_count)
+      break;
+  }
+
+  return true;
+}
+
+void _stdcall DoNothingAPC(ULONG_PTR dwParam) {}
+
 class CaptureManager {
   const Settings settings_;
+  uint64_t capture_start_ms_;
+  uint32_t capture_count_;
   plx::ComPtr<VideoCaptureH264> capture_;
-  uint64_t start_ms_;
+  std::unique_ptr<std::thread> cleaner_thread_;
 
 public:
-  CaptureManager(const Settings& settings) : settings_(settings), start_ms_(0ULL) {
+  CaptureManager(const Settings& settings) 
+      : settings_(settings),
+        capture_start_ms_(0ULL),
+        capture_count_(0UL) {
     auto bitrate = plx::To<uint32_t>(settings.average_bitrate);
     // validate config.
     if (settings_.seconds_per_file < 10)
@@ -448,27 +495,40 @@ public:
       throw AppException(HardFailures::bad_config, __LINE__);
     // Open camera and configure capture device.
     capture_ = plx::MakeComObj<VideoCaptureH264>(GetCaptureDevice(), bitrate);
+    // configure cleaner thread.
+    cleaner_thread_ = std::make_unique<std::thread>(
+        &CaptureManager::cleaner_threadproc, settings);
+  }
+
+  CaptureManager(const CaptureManager&) = delete;
+
+  ~CaptureManager() {
+    if (cleaner_thread_) {
+      ::QueueUserAPC(&DoNothingAPC, cleaner_thread_->native_handle(), 0);
+      cleaner_thread_->join();
+    }
   }
 
   void start() {
     // configure encoder and start capturing.
     auto file = gen_filename();
     capture_->start(file.c_str());
-    start_ms_ = ::GetTickCount64();
+    capture_start_ms_ = ::GetTickCount64();
+    ++capture_count_;
   }
 
   void stop() {
-    if (start_ms_) {
+    if (capture_start_ms_) {
       // stop only destroys the encoder.
       capture_->stop();
-      start_ms_ = 0ULL;
+      capture_start_ms_ = 0ULL;
     }
   }
 
   void on_timer() {
-    if (!start_ms_)
+    if (!capture_start_ms_)
       return;
-    int64_t elapsed_s = (::GetTickCount64() - start_ms_) / 1000ULL;
+    int64_t elapsed_s = (::GetTickCount64() - capture_start_ms_) / 1000ULL;
     if (elapsed_s > settings_.seconds_per_file) {
       // Time to start a new file.
       stop();
@@ -494,8 +554,22 @@ private:
           "\\Y%02d-%02d-%02d-pm-%02dh%02dm%02ds.mp4",
           st.wYear, st.wMonth, st.wDay, st.wHour - 12, st.wMinute, st.wSecond);
     }
-
     return plx::UTF16FromUTF8(plx::RangeFromString(filename), true);
+  }
+
+  static void cleaner_threadproc(const Settings settings) {
+    while (true) {
+      // alertable sleep.
+      auto le = ::SleepEx(10 * 60 * 1000, TRUE);
+      if (le != 0)
+        break;
+      // timed out. Proceed to clean.
+      plx::FilePath path(std::wstring(settings.folder.begin(), settings.folder.end()));
+      auto dir = OpenDirectory(path);
+      if (dir.status() != (plx::File::directory | plx::File::existing))
+        continue;
+      EnumAndClean(plx::FilesInfo::FromDir(dir), path, settings.keep_file_count);
+    }
   }
 
 };
@@ -515,7 +589,7 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
 
     capture_manager.start();
     window.set_timer_callback(
-        1000, std::bind(&CaptureManager::on_timer, capture_manager));
+        1000, std::bind(&CaptureManager::on_timer, &capture_manager));
 
     MSG msg = {0};
     while (::GetMessage(&msg, NULL, 0, 0)) {
