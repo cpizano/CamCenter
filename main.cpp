@@ -14,7 +14,8 @@ enum class HardFailures {
   com_error,
   no_capture_device,
   bad_format,
-  invalid_command
+  invalid_command,
+  plex_error
 };
 
 struct AppException {
@@ -23,8 +24,7 @@ struct AppException {
   AppException(HardFailures failure, int line) : failure(failure), line(line) {}
 };
 
-void HardfailMsgBox(HardFailures id, const wchar_t* info) {
-  // $$ implement.
+void HardfailMsgBox(HardFailures id, int line) {
   __debugbreak();
 }
 
@@ -69,6 +69,7 @@ class DCoWindow : public plx::Window <DCoWindow> {
   plx::ComPtr<IDCompositionVisual2> root_visual_;
   plx::ComPtr<IDCompositionSurface> root_surface_;
 
+  std::function<void()> timer_callback_;
 
 public:
   DCoWindow(int width, int height)
@@ -121,9 +122,20 @@ public:
 
   }
 
+  void set_timer_callback(int milisecs, std::function<void()> callback) {
+    timer_callback_ = callback;
+    ::SetTimer(window(), 169, milisecs, nullptr);
+  }
+
+  void reset_timer() {
+    if (timer_callback_)
+      ::KillTimer(window(), 169);
+  }
+
   LRESULT message_handler(const UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
       case WM_DESTROY: {
+        reset_timer();
         ::PostQuitMessage(0);
         return 0;
       }
@@ -134,6 +146,11 @@ public:
 
       case WM_DPICHANGED: {
         return dpi_changed_handler(lparam);
+      }
+
+      case WM_TIMER: {
+        timer_callback_();
+        return 0;
       }
     }
 
@@ -356,7 +373,6 @@ public:
 
     writer_->Finalize();
     writer_.Reset();
-    reader_.Reset();
   }
 
 private:
@@ -406,20 +422,45 @@ private:
 class CaptureManager {
   const Settings settings_;
   plx::ComPtr<VideoCaptureH264> capture_;
+  uint64_t start_ms_;
 
 public:
-  CaptureManager(const Settings& settings) : settings_(settings) {
+  CaptureManager(const Settings& settings) : settings_(settings), start_ms_(0ULL) {
     auto bitrate = plx::To<uint32_t>(settings.average_bitrate);
+    // validate config.
+    if (settings_.seconds_per_file < 10)
+      throw AppException(HardFailures::bad_config, __LINE__);
+    if (settings_.average_bitrate < 50000)
+      throw AppException(HardFailures::bad_config, __LINE__);
+    // Open camera and configure capture device.
     capture_ = plx::MakeComObj<VideoCaptureH264>(GetCaptureDevice(), bitrate);
   }
 
   void start() {
+    // configure encoder and start capturing.
     auto file = gen_filename();
     capture_->start(file.c_str());
+    start_ms_ = ::GetTickCount64();
   }
 
   void stop() {
-    capture_->stop();
+    if (start_ms_) {
+      // stop only destroys the encoder.
+      capture_->stop();
+      start_ms_ = 0ULL;
+    }
+  }
+
+  void on_timer() {
+    if (!start_ms_)
+      return;
+    int64_t elapsed_s = (::GetTickCount64() - start_ms_) / 1000ULL;
+    if (elapsed_s > settings_.seconds_per_file) {
+      // Time to start a new file.
+      stop();
+      ::Sleep(100);
+      start();
+    }
   }
 
 private:
@@ -456,8 +497,12 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
     DCoWindow window(300, 200);
 
     MediaFoundationInit mf_init;
+
     CaptureManager capture_manager(LoadSettings());
+
     capture_manager.start();
+    window.set_timer_callback(
+        1000, std::bind(&CaptureManager::on_timer, capture_manager));
 
     MSG msg = {0};
     while (::GetMessage(&msg, NULL, 0, 0)) {
@@ -465,19 +510,20 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
       ::DispatchMessage(&msg);
     }
 
+    window.reset_timer();
     capture_manager.stop();
 
     return (int) msg.wParam;
 
-  } catch (plx::IOException& ex) {
-    HardfailMsgBox(HardFailures::bad_config, ex.Name());
-    return 1;
+
   } catch (plx::ComException& ex) {
-    auto l = ex.Line();
-    HardfailMsgBox(HardFailures::com_error, L"COM");
+    HardfailMsgBox(HardFailures::com_error, ex.Line());
+    return 1;
+  } catch (plx::Exception& ex) {
+    HardfailMsgBox(HardFailures::plex_error, ex.Line());
     return 2;
   } catch (AppException& ex) {
-    HardfailMsgBox(ex.failure, L"App");
+    HardfailMsgBox(ex.failure, ex.line);
     return 3;
   }
 }

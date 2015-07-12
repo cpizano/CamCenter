@@ -25,6 +25,7 @@
 #include <dvdmedia.h>
 #include <string.h>
 #include <array>
+#include <functional>
 #include <initializer_list>
 #include <cctype>
 #include <iterator>
