@@ -14,7 +14,7 @@
     <ClInclude Include="stdafx.h">
       <Filter>Source Files</Filter>
     </ClInclude>
-    <ClInclude Include="Resource.h">
+    <ClInclude Include="resource.h">
       <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>
