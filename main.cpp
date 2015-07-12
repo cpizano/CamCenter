@@ -25,7 +25,21 @@ struct AppException {
 };
 
 void HardfailMsgBox(HardFailures id, int line) {
-  __debugbreak();
+  const char* err = nullptr;
+  switch (id) {
+    case HardFailures::none: err = "none"; break;
+    case HardFailures::bad_config: err = "bad config"; break;
+    case HardFailures::com_error: err = "com error"; break;
+    case HardFailures::no_capture_device: err = "no capture device"; break;
+    case HardFailures::bad_format: err = "bad format"; break;
+    case HardFailures::invalid_command: err = "invalid command"; break;
+    case HardFailures::plex_error: err = "plex error"; break;
+    default: err = "(??)"; break;
+  }
+
+  auto err_text = plx::StringPrintf("Exception [%s]\nLine: %d", err, line);
+  auto full_err = plx::UTF16FromUTF8(plx::RangeFromString(err_text), true);
+  ::MessageBox(NULL, full_err.c_str(), L"CamCenter", MB_OK | MB_ICONEXCLAMATION);
 }
 
 struct Settings {
@@ -489,8 +503,7 @@ private:
 int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
                        wchar_t* cmdline, int cmd_show) {
 
-  // Despite this, MediaFoundation IMFSourceReaderCallback is multithreaded.
-  ::CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  ::CoInitializeEx(NULL, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
 
   try {
     auto settings = LoadSettings();
@@ -512,9 +525,8 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
 
     window.reset_timer();
     capture_manager.stop();
-
+    // Exit program.
     return (int) msg.wParam;
-
 
   } catch (plx::ComException& ex) {
     HardfailMsgBox(HardFailures::com_error, ex.Line());
