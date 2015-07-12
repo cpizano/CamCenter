@@ -78,12 +78,13 @@ class DCoWindow : public plx::Window <DCoWindow> {
   const int width_;
   const int height_;
 
+  std::function<void()> timer_callback_;
+
   plx::ComPtr<ID3D11Device> d3d_device_;
   plx::ComPtr<ID2D1Factory2> d2d_factory_;
   plx::ComPtr<ID2D1Device> d2d_device_;
   plx::ComPtr<IDCompositionDesktopDevice> dco_device_;
   plx::ComPtr<IDCompositionTarget> dco_target_;
-
   plx::ComPtr<IDCompositionVisual2> root_visual_;
   plx::ComPtr<IDCompositionSurface> root_surface_;
   
@@ -95,17 +96,13 @@ class DCoWindow : public plx::Window <DCoWindow> {
   };
 
   plx::D2D1BrushManager brushes_;
-
   plx::ComPtr<ID2D1Geometry> geom_close_;
   plx::ComPtr<ID2D1Geometry> geom_move_;
-
-  std::function<void()> timer_callback_;
 
 public:
   DCoWindow(int width, int height)
       : width_(width), height_(height),
         brushes_(brush_last) {
-
     create_window(WS_EX_NOREDIRECTIONBITMAP,
                   WS_POPUP | WS_VISIBLE,
                   L"camcenter @ 2015",
@@ -114,10 +111,9 @@ public:
                   width_, height_,
                   nullptr,
                   nullptr);
-
+    // do the d2d factory dance.
     d3d_device_ = plx::CreateDeviceD3D11(0);
     d2d_factory_ = plx::CreateD2D1FactoryST(D2D1_DEBUG_LEVEL_NONE);
-
     d2d_device_ = plx::CreateDeviceD2D1(d3d_device_, d2d_factory_);
     dco_device_ = plx::CreateDCoDevice2(d2d_device_);
     // create the composition target and the root visual.
@@ -246,7 +242,6 @@ public:
     } else {
       // probably on the main text.
     }
-    
     return 0L;
   }
 
@@ -379,8 +374,6 @@ public:
 
       mtype->FreeRepresentation(AM_MEDIA_TYPE_REPRESENTATION, amr);
     }
-
-
     // Register the color converter DSP for this process. This will enable the sink writer
     // to find the color converter when the sink writer attempts to match the media types.
     hr = ::MFTRegisterLocalByCLSID(__uuidof(CColorConvertDMO),
@@ -443,10 +436,8 @@ public:
 
   void stop() {
     auto lock = rw_lock_.write_lock();
-
     if (!writer_)
       return;
-
     writer_->Finalize();
     writer_.Reset();
   }
@@ -459,7 +450,6 @@ private:
                                  IMFSample *sample) override {
     if (FAILED(status))
       return status;
-
     HRESULT hr;
     auto lock = rw_lock_.write_lock();
 
@@ -486,7 +476,7 @@ private:
     return hr;
   };
 
-  HRESULT __stdcall OnEvent(DWORD, IMFMediaEvent *) override {
+  HRESULT __stdcall OnEvent(DWORD, IMFMediaEvent*) override {
     return S_OK;
   }
 
@@ -521,7 +511,6 @@ bool EnumAndClean(plx::FilesInfo& files, const plx::FilePath& dirname, int64_t k
       auto gle = ::GetLastError();
       continue;
     }
-
     // success, adjust the count.
     --delete_count;
     if (!delete_count)
@@ -634,7 +623,6 @@ private:
 
 int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
                        wchar_t* cmdline, int cmd_show) {
-
   ::CoInitializeEx(NULL, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
 
   try {
@@ -642,7 +630,6 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
     DCoWindow window(300, 200);
 
     MediaFoundationInit mf_init;
-
     CaptureManager capture_manager(LoadSettings());
 
     capture_manager.start();
