@@ -5,6 +5,7 @@
 
 
 
+#pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "shcore.lib")
 #pragma comment(lib, "mf.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -67,6 +68,16 @@ plx::ComPtr<IDCompositionTarget> CreateDCoWindowTarget(
   if (hr != S_OK)
     throw plx::ComException(__LINE__, hr);
   return target;
+}
+plx::ComPtr<IDWriteFactory> CreateDWriteFactory() {
+  plx::ComPtr<IDWriteFactory> factory;
+  auto hr = ::DWriteCreateFactory(
+      DWRITE_FACTORY_TYPE_SHARED,
+      __uuidof(IDWriteFactory),
+      reinterpret_cast<IUnknown**>(factory.GetAddressOf()));
+  if (hr != S_OK)
+    throw plx::ComException(__LINE__, hr);
+  return factory;
 }
 plx::ComPtr<ID2D1Factory2> CreateD2D1FactoryST(D2D1_DEBUG_LEVEL debug_level) {
   D2D1_FACTORY_OPTIONS options = {};
@@ -153,6 +164,19 @@ ItRange<uint16_t*> RangeFromString(std::wstring& str) {
   auto s = reinterpret_cast<uint16_t*>(&str.front());
   return ItRange<uint16_t*>(s, s + str.size());
 }
+plx::ComPtr<IDWriteTextFormat> CreateDWriteSystemTextFormat(
+    plx::ComPtr<IDWriteFactory> dw_factory,
+    const wchar_t* font_family, float size,
+    const plx::FontWSSParams& params) {
+  plx::ComPtr<IDWriteTextFormat> format;
+  auto hr = dw_factory->CreateTextFormat(font_family, nullptr,
+                                         params.weight, params.style, params.stretch,
+                                         size, L"",
+                                         format.GetAddressOf());
+  if (hr != S_OK)
+    throw plx::ComException(__LINE__, hr);
+  return format;
+}
 plx::FilePath GetAppDataPath(bool roaming) {
   auto folder = roaming? FOLDERID_RoamingAppData : FOLDERID_LocalAppData;
   wchar_t* path = nullptr;
@@ -211,6 +235,19 @@ long long NextInt(unsigned long long value) {
   if (static_cast<long long>(value) < 0LL)
     throw plx::OverflowException(__LINE__, plx::OverflowKind::Positive);
   return long long(value);
+}
+plx::ComPtr<IDWriteTextLayout> CreateDWTextLayout(
+  plx::ComPtr<IDWriteFactory> dw_factory, plx::ComPtr<IDWriteTextFormat> format,
+  const plx::Range<const wchar_t>& text, const D2D1_SIZE_F& size) {
+  plx::ComPtr<IDWriteTextLayout> layout;
+  auto hr = dw_factory->CreateTextLayout(
+      text.start(), plx::To<UINT32>(text.size()),
+      format.Get(),
+      size.width, size.height,
+      layout.GetAddressOf());
+  if (hr != S_OK)
+    throw plx::ComException(__LINE__, hr);
+  return layout;
 }
 std::string DecodeString(plx::Range<const char>& range) {
   if (range.empty())

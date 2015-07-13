@@ -10,6 +10,7 @@
 
 
 #include <objbase.h>
+#include <dwrite.h>
 #include <shellscalingapi.h>
 #include <mfidl.h>
 #include <mfapi.h>
@@ -230,6 +231,47 @@ plx::ComPtr<IDCompositionTarget> CreateDCoWindowTarget(
     plx::ComPtr<IDCompositionDesktopDevice> device, HWND window) ;
 
 
+///////////////////////////////////////////////////////////////////////////////
+// plx::RangeException (thrown by ItRange and others)
+//
+class RangeException : public plx::Exception {
+  void* ptr_;
+public:
+  RangeException(int line, void* ptr)
+      : Exception(line, "Invalid Range"), ptr_(ptr) {
+    PostCtor();
+  }
+
+  void* pointer() const {
+    return ptr_;
+  }
+};
+
+
+///////////////////////////////////////////////////////////////////////////////
+// plx::CreateDWriteFactory : DirectWrite shared factory.
+//
+
+plx::ComPtr<IDWriteFactory> CreateDWriteFactory() ;
+
+
+///////////////////////////////////////////////////////////////////////////////
+// plx::FontWSSParams : style, weight, stretch for DirectWrite fonts.
+//
+
+struct FontWSSParams {
+  DWRITE_FONT_WEIGHT weight;
+  DWRITE_FONT_STYLE style;
+  DWRITE_FONT_STRETCH stretch;
+
+  static FontWSSParams MakeNormal() {
+    FontWSSParams wss = {
+      DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL };
+    return wss;
+  }
+};
+
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // plx::CreateD2D1FactoryST : Direct2D fatory.
@@ -286,23 +328,6 @@ public:
 plx::ComPtr<ID2D1DeviceContext> CreateDCoDeviceCtx(
     plx::ComPtr<IDCompositionSurface> surface,
     const plx::DPI& dpi, const D2D1_SIZE_F& extra_offset) ;
-
-
-///////////////////////////////////////////////////////////////////////////////
-// plx::RangeException (thrown by ItRange and others)
-//
-class RangeException : public plx::Exception {
-  void* ptr_;
-public:
-  RangeException(int line, void* ptr)
-      : Exception(line, "Invalid Range"), ptr_(ptr) {
-    PostCtor();
-  }
-
-  void* pointer() const {
-    return ptr_;
-  }
-};
 
 
 
@@ -528,6 +553,13 @@ std::unique_ptr<U[]> HeapRange(ItRange<U*>&r) {
 
 
 ///////////////////////////////////////////////////////////////////////////////
+// plx::Range  (alias for ItRange<T*>)
+//
+template <typename T>
+using Range = plx::ItRange<T*>;
+
+
+///////////////////////////////////////////////////////////////////////////////
 // plx::IOException
 // error_code_ : The win32 error code of the last operation.
 // name_ : The file or pipe in question.
@@ -654,10 +686,79 @@ public:
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// plx::Range  (alias for ItRange<T*>)
+// plx::LinkedBuffers
 //
-template <typename T>
-using Range = plx::ItRange<T*>;
+class LinkedBuffers {
+  struct Item {
+    size_t size;
+    std::unique_ptr<uint8_t[]> data;
+    Item(size_t size)
+        : size(size), data(new uint8_t[size]) {
+    }
+
+    Item(const Item& other)
+        : size(other.size), data(new uint8_t[size]) {
+      memcpy(data.get(), other.data.get(), size);
+    }
+
+    Item(Item&& other) = delete;
+  };
+
+  typedef std::list<Item> BList;
+
+  BList buffers_;
+  BList::iterator loop_it_;
+
+public:
+  LinkedBuffers() {
+  }
+
+  LinkedBuffers(const LinkedBuffers& other)
+      : buffers_(other.buffers_) {
+  }
+
+  LinkedBuffers(LinkedBuffers&& other) {
+    buffers_.swap(other.buffers_);
+    std::swap(loop_it_, other.loop_it_);
+  }
+
+  plx::Range<uint8_t> new_buffer(size_t size_bytes) {
+    buffers_.emplace_back(size_bytes);
+    auto start = &(buffers_.back().data)[0];
+    return plx::Range<uint8_t>(start, start + size_bytes);
+  }
+
+  void remove_last_buffer() {
+    buffers_.pop_back();
+  }
+
+  void first() {
+    loop_it_ = begin(buffers_);
+  }
+
+  void next() {
+    ++loop_it_;
+  }
+
+  bool done() {
+    return (loop_it_ == end(buffers_));
+  }
+
+  plx::Range<uint8_t> get() {
+    auto start = &(loop_it_->data)[0];
+    return plx::Range<uint8_t>(start, start + loop_it_->size);
+  }
+};
+
+
+///////////////////////////////////////////////////////////////////////////////
+// plx::CreateDWriteSystemTextFormat :  DirectWrite font object.
+//
+
+plx::ComPtr<IDWriteTextFormat> CreateDWriteSystemTextFormat(
+    plx::ComPtr<IDWriteFactory> dw_factory,
+    const wchar_t* font_family, float size,
+    const plx::FontWSSParams& params) ;
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1196,72 +1297,6 @@ enum class OverflowKind {
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// plx::LinkedBuffers
-//
-class LinkedBuffers {
-  struct Item {
-    size_t size;
-    std::unique_ptr<uint8_t[]> data;
-    Item(size_t size)
-        : size(size), data(new uint8_t[size]) {
-    }
-
-    Item(const Item& other)
-        : size(other.size), data(new uint8_t[size]) {
-      memcpy(data.get(), other.data.get(), size);
-    }
-
-    Item(Item&& other) = delete;
-  };
-
-  typedef std::list<Item> BList;
-
-  BList buffers_;
-  BList::iterator loop_it_;
-
-public:
-  LinkedBuffers() {
-  }
-
-  LinkedBuffers(const LinkedBuffers& other)
-      : buffers_(other.buffers_) {
-  }
-
-  LinkedBuffers(LinkedBuffers&& other) {
-    buffers_.swap(other.buffers_);
-    std::swap(loop_it_, other.loop_it_);
-  }
-
-  plx::Range<uint8_t> new_buffer(size_t size_bytes) {
-    buffers_.emplace_back(size_bytes);
-    auto start = &(buffers_.back().data)[0];
-    return plx::Range<uint8_t>(start, start + size_bytes);
-  }
-
-  void remove_last_buffer() {
-    buffers_.pop_back();
-  }
-
-  void first() {
-    loop_it_ = begin(buffers_);
-  }
-
-  void next() {
-    ++loop_it_;
-  }
-
-  bool done() {
-    return (loop_it_ == end(buffers_));
-  }
-
-  plx::Range<uint8_t> get() {
-    auto start = &(loop_it_->data)[0];
-    return plx::Range<uint8_t>(start, start + loop_it_->size);
-  }
-};
-
-
-///////////////////////////////////////////////////////////////////////////////
 // plx::OverflowException (thrown by some numeric converters)
 // kind_ : Type of overflow, positive or negative.
 //
@@ -1376,30 +1411,6 @@ To(const Src & value) {
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// SkipWhitespace (advances a range as long isspace() is false.
-//
-template <typename T>
-typename std::enable_if<
-    sizeof(T) == 1,
-    plx::Range<T>>::type
-SkipWhitespace(const plx::Range<T>& r) {
-  auto wr = r;
-  while (!wr.empty()) {
-    if (!std::isspace(wr.front()))
-      break;
-    wr.advance(1);
-  }
-  return wr;
-}
-
-
-///////////////////////////////////////////////////////////////////////////////
-// plx::DecodeString (decodes a json-style encoded string)
-//
-std::string DecodeString(plx::Range<const char>& range) ;
-
-
-///////////////////////////////////////////////////////////////////////////////
 // plx::FilesInfo
 //
 #pragma comment(user, "plex.define=plex_vista_support")
@@ -1485,6 +1496,39 @@ public:
     return info_->FileAttributes & FILE_ATTRIBUTE_DIRECTORY? true : false;
   }
 };
+
+
+///////////////////////////////////////////////////////////////////////////////
+// SkipWhitespace (advances a range as long isspace() is false.
+//
+template <typename T>
+typename std::enable_if<
+    sizeof(T) == 1,
+    plx::Range<T>>::type
+SkipWhitespace(const plx::Range<T>& r) {
+  auto wr = r;
+  while (!wr.empty()) {
+    if (!std::isspace(wr.front()))
+      break;
+    wr.advance(1);
+  }
+  return wr;
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+// plx::CreateDWTextLayout : DirectWrite text layout object.
+//
+
+plx::ComPtr<IDWriteTextLayout> CreateDWTextLayout(
+  plx::ComPtr<IDWriteFactory> dw_factory, plx::ComPtr<IDWriteTextFormat> format,
+  const plx::Range<const wchar_t>& text, const D2D1_SIZE_F& size) ;
+
+
+///////////////////////////////////////////////////////////////////////////////
+// plx::DecodeString (decodes a json-style encoded string)
+//
+std::string DecodeString(plx::Range<const char>& range) ;
 
 
 

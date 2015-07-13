@@ -87,7 +87,9 @@ class DCoWindow : public plx::Window <DCoWindow> {
   plx::ComPtr<IDCompositionTarget> dco_target_;
   plx::ComPtr<IDCompositionVisual2> root_visual_;
   plx::ComPtr<IDCompositionSurface> root_surface_;
-  
+  plx::ComPtr<IDWriteFactory> dwrite_factory_;
+  plx::ComPtr<IDWriteTextFormat> text_fmt_;
+
   enum BrushesMain {
     brush_close,
     brush_drag,
@@ -98,6 +100,7 @@ class DCoWindow : public plx::Window <DCoWindow> {
   plx::D2D1BrushManager brushes_;
   plx::ComPtr<ID2D1Geometry> geom_close_;
   plx::ComPtr<ID2D1Geometry> geom_move_;
+  plx::ComPtr<IDWriteTextLayout> text_layout_;
 
 public:
   DCoWindow(int width, int height)
@@ -132,13 +135,15 @@ public:
     if (hr != S_OK)
       throw plx::ComException(__LINE__, hr);
 
+    // intialize widget geometies.
     auto widget_pos = D2D1::Point2F(18.0f, 18.0f);
     geom_close_ = plx::CreateD2D1Geometry(d2d_factory_,
-        D2D1::Ellipse(D2D1::Point2F(width_ - 18.0f , 18.0f), 8.0f, 8.0f));
+        D2D1::Ellipse(D2D1::Point2F(width_ - 15.0f , 15.0f), 8.0f, 8.0f));
 
     geom_move_ = plx::CreateD2D1Geometry(d2d_factory_,
         D2D1::RoundedRect(D2D1::RectF(22.0f, 0, width_ - 25.0f, 16), 3.0f, 3.0f));
 
+    // initialize brushes.
     {
       plx::ScopedD2D1DeviceContext dc(root_surface_, zero_offset, dpi(), nullptr);
       brushes_.set_solid(dc(), brush_close, 0xBD4B5B, 1.0f);
@@ -146,6 +151,20 @@ public:
       brushes_.set_solid(dc(), brush_text, 0x00AE4A, 1.0f);
     }
 
+    // Init text system.
+    dwrite_factory_ = plx::CreateDWriteFactory();
+    text_fmt_ = plx::CreateDWriteSystemTextFormat(
+        dwrite_factory_, L"Consolas", 14.0f, plx::FontWSSParams::MakeNormal());
+    // Draw all.
+    update_screen();
+  }
+
+  void update_text(const std::wstring& text) {
+    plx::Range<const wchar_t> r(&text[0], text.size());
+    auto width = width_ - 32.0f;
+    auto height = text_fmt_->GetFontSize() * 1.2f;
+    text_layout_ = plx::CreateDWTextLayout(dwrite_factory_,
+        text_fmt_, r, D2D1::SizeF(width, height));
     update_screen();
   }
 
@@ -154,8 +173,13 @@ public:
       D2D1::ColorF bk_color(0x000000, 0.9f);
       plx::ScopedD2D1DeviceContext dc(root_surface_, zero_offset, dpi(), &bk_color);
       draw_frame(dc());
+      if (text_layout_) {
+        // Draw main screen text.
+        dc()->DrawTextLayout(D2D1::Point2F(16.0f, 26.0f),
+                             text_layout_.Get(),
+                             brushes_.solid(brush_text));
+      }
     }
-
     dco_device_->Commit();
   }
 
@@ -523,15 +547,19 @@ bool EnumAndClean(plx::FilesInfo& files, const plx::FilePath& dirname, int64_t k
 void _stdcall DoNothingAPC(ULONG_PTR dwParam) {}
 
 class CaptureManager {
+  DCoWindow* window_;
   const Settings settings_;
+  uint64_t start_time_ms_;
   uint64_t capture_start_ms_;
   uint32_t capture_count_;
   plx::ComPtr<VideoCaptureH264> capture_;
   std::unique_ptr<std::thread> cleaner_thread_;
-
+  
 public:
-  CaptureManager(const Settings& settings) 
-      : settings_(settings),
+  CaptureManager(DCoWindow* window, const Settings& settings) 
+      : window_(window),
+        settings_(settings),
+        start_time_ms_(::GetTickCount64()),
         capture_start_ms_(0ULL),
         capture_count_(0UL) {
     auto bitrate = plx::To<uint32_t>(settings.average_bitrate);
@@ -545,6 +573,8 @@ public:
     // configure cleaner thread.
     cleaner_thread_ = std::make_unique<std::thread>(
         &CaptureManager::cleaner_threadproc, settings);
+    // update UI.
+    update_ui_status();
   }
 
   CaptureManager(const CaptureManager&) = delete;
@@ -557,6 +587,10 @@ public:
   }
 
   void start() {
+    if (!capture_count_) {
+      window_->set_timer_callback(
+          1000, std::bind(&CaptureManager::on_timer, this));
+    }
     // configure encoder and start capturing.
     auto file = gen_filename();
     capture_->start(file.c_str());
@@ -582,10 +616,12 @@ public:
       ::Sleep(100);
       start();
     }
+    // update the UI.
+    if (elapsed_s > 3)
+      update_ui_status();
   }
 
 private:
-
   std::wstring gen_filename() {
     SYSTEMTIME st = {0};
     ::GetLocalTime(&st);
@@ -602,6 +638,25 @@ private:
           st.wYear, st.wMonth, st.wDay, st.wHour - 12, st.wMinute, st.wSecond);
     }
     return plx::UTF16FromUTF8(plx::RangeFromString(filename), true);
+  }
+
+  void update_ui_status() {
+    static const char anim[] = { '/', '-', '\\', '|' };
+    static int count = 0;
+
+    auto elapsed_secs = (GetTickCount64() - start_time_ms_) / 1000LL;
+    auto status = plx::StringPrintf(
+        "=== CamCenter v1 2015 by cpu@ ===\n\n\n"
+        " Running for %d hours [%c]\n"
+        " Directory is [%s]\n"
+        " %d videos of %d secs captured\n"
+        " Kepping %d videos\n",
+        elapsed_secs / 3600LL, anim[++count % sizeof(anim)],
+        settings_.folder.c_str(),
+        capture_count_, settings_.seconds_per_file,
+        settings_.keep_file_count);
+    auto text = plx::UTF16FromUTF8(plx::RangeFromString(status), true);
+    window_->update_text(text);
   }
 
   static void cleaner_threadproc(const Settings settings) {
@@ -630,11 +685,9 @@ int __stdcall wWinMain(HINSTANCE instance, HINSTANCE,
     DCoWindow window(300, 200);
 
     MediaFoundationInit mf_init;
-    CaptureManager capture_manager(LoadSettings());
+    CaptureManager capture_manager(&window, LoadSettings());
 
     capture_manager.start();
-    window.set_timer_callback(
-        1000, std::bind(&CaptureManager::on_timer, &capture_manager));
 
     MSG msg = {0};
     while (::GetMessage(&msg, NULL, 0, 0)) {
